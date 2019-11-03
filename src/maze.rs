@@ -254,8 +254,8 @@ impl Maze {
         }
 
         // 上下左右の区画に移動可能かを判定する
-        let is_passing_up = self.cells[p.y][p.x].up_wall == Some(false);
-        let is_passing_right = self.cells[p.y][p.x].right_wall == Some(false);
+        let is_passing_up = p.y < MAZE_HEIGHT - 1 && self.cells[p.y][p.x].up_wall == Some(false);
+        let is_passing_right = p.x < MAZE_WIDTH - 1 && self.cells[p.y][p.x].right_wall == Some(false);
         let is_passing_down = p.y > 0 && self.cells[p.y - 1][p.x].up_wall == Some(false);
         let is_passing_left = p.x > 0 && self.cells[p.y][p.x - 1].right_wall == Some(false);
         // 斜め方向の区画に移動可能か判定する。斜め走行前提
