@@ -15,6 +15,20 @@ impl Default for Point {
     }
 }
 
+/// 方向を示す
+#[derive(Copy, Clone, Debug)]
+pub enum Direction {
+    NoDir,
+    Up,
+    Down,
+    Left,
+    Right,
+    UpLeft,
+    UpRight,
+    DownLeft,
+    DownRight,
+}
+
 /// 各区画単位の管理情報
 #[derive(Copy, Clone, Debug)]
 pub struct Cell {
@@ -24,14 +38,25 @@ pub struct Cell {
     pub right_wall: Option<bool>,
     /// ここまでの到達に必要な手数
     pub cost: Option<usize>,
+
+    // TODO: boolだとサイズがでかくて無理な場合、別クラスでビットフラグ管理で管理
     /// セルの壁情報が更新済
     pub is_updated: bool,
     /// 周辺セルを探索済
     pub is_search_around: bool,
     /// 検索対象リストに追加されたことがあればtrue
     pub is_provider_pushed: bool,
-    /// 当初の探索時より少ないコストで到達できる場合
+    /// 当初の探索時より少ないコストで到達できる場合フラグを立てる
+    /// from_dirで逆順に戻った場合に、コストが非連続になる
     pub is_cost_dirty: bool,
+
+    /// 逆順にたどった際の最短になっている場合はtrue
+    pub is_answer: bool,
+    /// Goal発見後の探索で、理想最短コストが既存のコストを上回っている場合は探索しない
+    pub is_invalidated: bool,
+    /// どのマスから来たか, cost_dirtyをつける際は付け替える
+    /// goalからstartに戻る際に、最小コストの単方向リストとして完成しているはず
+    pub from_dir: Direction,
 }
 impl Default for Cell {
     fn default() -> Self {
@@ -43,6 +68,10 @@ impl Default for Cell {
             is_search_around: false,
             is_provider_pushed: false,
             is_cost_dirty: false,
+
+            is_answer: false,
+            is_invalidated: false,
+            from_dir: Direction::NoDir,
         }
     }
 }
@@ -167,6 +196,44 @@ impl Point {
             cmp::max(dx, dy)
         }
     }
+    /// 指定した方向にある座標を取得します。例外処理は内包していません
+    pub fn get_around(&self, dir: Direction) -> Point {
+        match dir {
+            Direction::NoDir => self.clone(),
+            Direction::Up => Point {
+                x: self.x,
+                y: self.y + 1,
+            },
+            Direction::Down => Point {
+                x: self.x,
+                y: self.y - 1,
+            },
+            Direction::Left => Point {
+                x: self.x - 1,
+                y: self.y,
+            },
+            Direction::Right => Point {
+                x: self.x + 1,
+                y: self.y,
+            },
+            Direction::UpLeft => Point {
+                x: self.x - 1,
+                y: self.y + 1,
+            },
+            Direction::UpRight => Point {
+                x: self.x + 1,
+                y: self.y + 1,
+            },
+            Direction::DownLeft => Point {
+                x: self.x - 1,
+                y: self.y - 1,
+            },
+            Direction::DownRight => Point {
+                x: self.x + 1,
+                y: self.y - 1,
+            },
+        }
+    }
 }
 
 /// 迷路管理の親
@@ -255,7 +322,8 @@ impl Maze {
 
         // 上下左右の区画に移動可能かを判定する
         let is_passing_up = p.y < MAZE_HEIGHT - 1 && self.cells[p.y][p.x].up_wall == Some(false);
-        let is_passing_right = p.x < MAZE_WIDTH - 1 && self.cells[p.y][p.x].right_wall == Some(false);
+        let is_passing_right =
+            p.x < MAZE_WIDTH - 1 && self.cells[p.y][p.x].right_wall == Some(false);
         let is_passing_down = p.y > 0 && self.cells[p.y - 1][p.x].up_wall == Some(false);
         let is_passing_left = p.x > 0 && self.cells[p.y][p.x - 1].right_wall == Some(false);
         // 斜め方向の区画に移動可能か判定する。斜め走行前提
@@ -275,59 +343,36 @@ impl Maze {
                 || (is_passing_right && self.cells[p.y - 1][p.x + 1].up_wall == Some(false)));
 
         if is_passing_up {
-            targets.push((Point { x: p.x, y: p.y + 1 }, None));
+            targets.push((p.get_around(Direction::Up), None));
         }
         if is_passing_right {
-            targets.push((Point { x: p.x + 1, y: p.y }, None));
+            targets.push((p.get_around(Direction::Right), None));
         }
         if is_passing_down {
-            targets.push((Point { x: p.x, y: p.y - 1 }, None));
+            targets.push((p.get_around(Direction::Down), None));
         }
         if is_passing_left {
-            targets.push((Point { x: p.x - 1, y: p.y }, None));
+            targets.push((p.get_around(Direction::Left), None));
         }
         if is_passing_up_left {
-            targets.push((
-                Point {
-                    x: p.x - 1,
-                    y: p.y + 1,
-                },
-                None,
-            ));
+            targets.push((p.get_around(Direction::UpLeft), None));
         }
         if is_passing_up_right {
-            targets.push((
-                Point {
-                    x: p.x + 1,
-                    y: p.y + 1,
-                },
-                None,
-            ));
+            targets.push((p.get_around(Direction::UpRight), None));
         }
         if is_passing_down_left {
-            targets.push((
-                Point {
-                    x: p.x - 1,
-                    y: p.y - 1,
-                },
-                None,
-            ));
+            targets.push((p.get_around(Direction::DownLeft), None));
         }
         if is_passing_down_right {
-            targets.push((
-                Point {
-                    x: p.x + 1,
-                    y: p.y - 1,
-                },
-                None,
-            ));
+            targets.push((p.get_around(Direction::DownRight), None));
         }
         for (target_point, target_cost) in &mut targets {
             // コスト更新
             self.cells[target_point.y][target_point.x].update_cost(current_cost);
             // 検索予約に追加
-            if !self.cells[target_point.y][target_point.x].is_search_around &&
-            !self.cells[target_point.y][target_point.x].is_provider_pushed {
+            if !self.cells[target_point.y][target_point.x].is_search_around
+                && !self.cells[target_point.y][target_point.x].is_provider_pushed
+            {
                 self.cells[target_point.y][target_point.x].is_provider_pushed = true;
 
                 *target_cost = Some(
@@ -419,14 +464,30 @@ impl Maze {
                         2 if self.goal.x == i && self.goal.y == (MAZE_HEIGHT - 1 - j) => {
                             write!(out, " *GG* ")?
                         }
-                        2 => {
-                            write!(out, " {}{}{}{} ",
-                                if self.cells[MAZE_HEIGHT - 1 - j][i].is_updated { "U" } else { " " },
-                                if self.cells[MAZE_HEIGHT - 1 - j][i].is_search_around { "S" } else { " " },
-                                if self.cells[MAZE_HEIGHT - 1 - j][i].is_provider_pushed { "P" } else { " " },
-                                if self.cells[MAZE_HEIGHT - 1 - j][i].is_cost_dirty { "D" } else { " " }
-                            )?
-                        },
+                        2 => write!(
+                            out,
+                            " {}{}{}{} ",
+                            if self.cells[MAZE_HEIGHT - 1 - j][i].is_updated {
+                                "U"
+                            } else {
+                                " "
+                            },
+                            if self.cells[MAZE_HEIGHT - 1 - j][i].is_search_around {
+                                "S"
+                            } else {
+                                " "
+                            },
+                            if self.cells[MAZE_HEIGHT - 1 - j][i].is_provider_pushed {
+                                "P"
+                            } else {
+                                " "
+                            },
+                            if self.cells[MAZE_HEIGHT - 1 - j][i].is_cost_dirty {
+                                "D"
+                            } else {
+                                " "
+                            }
+                        )?,
                         _ => {
                             for _ in 0..CELL_WIDTH {
                                 write!(out, "{}", NO_WALL_STR)?;

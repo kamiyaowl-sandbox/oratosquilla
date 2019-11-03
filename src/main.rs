@@ -149,10 +149,13 @@ mod test {
     /// 一切壁がなく右端がゴールの場合に最短距離ですすめるか
     #[test]
     pub fn no_wall_move_x() {
-        let mut m = Maze::new(Point { x: MAZE_WIDTH - 1, y: 0 });
+        let mut m = Maze::new(Point {
+            x: MAZE_WIDTH - 1,
+            y: 0,
+        });
 
         let mut p = Point { x: 0, y: 0 };
-        for _i in 0..MAZE_WIDTH-1 {
+        for _i in 0..MAZE_WIDTH - 1 {
             let mut info = UpdateInfo::default();
             info.p = p;
             info.up = Some(false);
@@ -163,7 +166,6 @@ mod test {
             m.fetch_targets(p);
             p = m.get_next().unwrap();
             // m.debug_print("no_wall_move_x.log", "index").unwrap();
-
         }
         m.debug_print("test.log", "no_wall_move_x").unwrap();
 
@@ -174,10 +176,13 @@ mod test {
     /// 一切壁がなく上端がゴールの場合に最短距離ですすめるか
     #[test]
     pub fn no_wall_move_y() {
-        let mut m = Maze::new(Point { x: 0, y: MAZE_HEIGHT - 1 });
+        let mut m = Maze::new(Point {
+            x: 0,
+            y: MAZE_HEIGHT - 1,
+        });
 
         let mut p = Point { x: 0, y: 0 };
-        for _i in 0..MAZE_HEIGHT-1 {
+        for _i in 0..MAZE_HEIGHT - 1 {
             let mut info = UpdateInfo::default();
             info.p = p;
             info.up = Some(false);
@@ -188,17 +193,19 @@ mod test {
             m.fetch_targets(p);
             p = m.get_next().unwrap();
             // m.debug_print("no_wall_move_y.log", "index").unwrap();
-
         }
         m.debug_print("test.log", "no_wall_move_y").unwrap();
 
         assert_eq!(p.x, 0);
         assert_eq!(p.y, MAZE_HEIGHT - 1);
     }
-    /// 一切壁がなく右端がゴールの場合に最短距離ですすめるか
+    /// 一切壁がなく右上端がゴールの場合に最短距離ですすめるか
     #[test]
     pub fn no_wall_move_xy() {
-        let mut m = Maze::new(Point { x: MAZE_WIDTH - 1, y: MAZE_HEIGHT - 1 });
+        let mut m = Maze::new(Point {
+            x: MAZE_WIDTH - 1,
+            y: MAZE_HEIGHT - 1,
+        });
 
         let mut p = Point { x: 0, y: 0 };
         for _i in 0..31 {
@@ -211,7 +218,7 @@ mod test {
             m.update(&info);
             // 斜め走行を最初から出すためには隣のマスの情報が必要
             if p.x < MAZE_WIDTH - 1 {
-                info.p = Point { x: p.x + 1, y: p.y, };
+                info.p = Point { x: p.x + 1, y: p.y };
                 info.up = Some(false);
                 info.down = Some(false);
                 info.left = Some(false);
@@ -219,7 +226,7 @@ mod test {
                 m.update(&info);
             }
             if p.y < MAZE_HEIGHT - 1 {
-                info.p = Point { x: p.x , y: p.y + 1, };
+                info.p = Point { x: p.x, y: p.y + 1 };
                 info.up = Some(p.y >= MAZE_HEIGHT - 2);
                 info.down = Some(false);
                 info.left = Some(false);
@@ -230,14 +237,12 @@ mod test {
             m.fetch_targets(p);
             p = m.get_next().unwrap();
             // m.debug_print("no_wall_move_xy.log", "index").unwrap();
-
         }
         m.debug_print("test.log", "no_wall_move_xy").unwrap();
 
         assert_eq!(p.x, MAZE_WIDTH - 1);
         assert_eq!(p.y, MAZE_HEIGHT - 1);
     }
-
 }
 fn main() {
     use oratosquilla::maze::*;
