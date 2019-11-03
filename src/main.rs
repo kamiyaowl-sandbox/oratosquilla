@@ -2,12 +2,12 @@ extern crate oratosquilla;
 
 // #[cfg(test)]
 mod test {
-    use oratosquilla::maze::*;
+    use oratosquilla::prelude::*;
 
     /// 最初の地点から一歩進むか
     #[test]
     pub fn ahead_start() {
-        let mut m = Maze::new(Point { x: 10, y: 10 });
+        let mut m = Explorer::new(Point { x: 10, y: 10 });
 
         let p = Point { x: 0, y: 0 };
         let mut info = UpdateInfo::default();
@@ -36,7 +36,7 @@ mod test {
     /// .++++.++++.++++
     #[test]
     pub fn diagonal_start() {
-        let mut m = Maze::new(Point { x: 10, y: 10 });
+        let mut m = Explorer::new(Point { x: 10, y: 10 });
 
         let p = Point { x: 0, y: 0 };
         let mut info = UpdateInfo::default();
@@ -78,7 +78,7 @@ mod test {
     /// .++++.++++.++++.++++.
     #[test]
     pub fn diagonal_start_2() {
-        let mut m = Maze::new(Point { x: 10, y: 10 });
+        let mut m = Explorer::new(Point { x: 10, y: 10 });
 
         let p = Point { x: 0, y: 0 };
         let mut info = UpdateInfo::default();
@@ -119,7 +119,7 @@ mod test {
     /// ゴールしてかつ他に探索可能区間がない場合に探索が止まるか
     #[test]
     pub fn goal_and_stop() {
-        let mut m = Maze::new(Point { x: 0, y: 1 });
+        let mut m = Explorer::new(Point { x: 0, y: 1 });
 
         let p = Point { x: 0, y: 0 };
         let mut info = UpdateInfo::default();
@@ -149,7 +149,7 @@ mod test {
     /// 一切壁がなく右端がゴールの場合に最短距離ですすめるか
     #[test]
     pub fn no_wall_move_x() {
-        let mut m = Maze::new(Point {
+        let mut m = Explorer::new(Point {
             x: MAZE_WIDTH - 1,
             y: 0,
         });
@@ -176,7 +176,7 @@ mod test {
     /// 一切壁がなく上端がゴールの場合に最短距離ですすめるか
     #[test]
     pub fn no_wall_move_y() {
-        let mut m = Maze::new(Point {
+        let mut m = Explorer::new(Point {
             x: 0,
             y: MAZE_HEIGHT - 1,
         });
@@ -202,7 +202,7 @@ mod test {
     /// 一切壁がなく右上端がゴールの場合に最短距離ですすめるか
     #[test]
     pub fn no_wall_move_xy() {
-        let mut m = Maze::new(Point {
+        let mut m = Explorer::new(Point {
             x: MAZE_WIDTH - 1,
             y: MAZE_HEIGHT - 1,
         });
@@ -245,5 +245,5 @@ mod test {
     }
 }
 fn main() {
-    use oratosquilla::maze::*;
+    // use oratosquilla::prelude::*;
 }
