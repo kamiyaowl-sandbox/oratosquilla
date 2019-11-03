@@ -1,7 +1,7 @@
 use super::direction::Direction;
 
 /// 座標
-#[derive(Copy, Clone, Debug)]
+#[derive(Eq, PartialEq, Copy, Clone, Debug)]
 pub struct Point {
     pub x: usize,
     pub y: usize,

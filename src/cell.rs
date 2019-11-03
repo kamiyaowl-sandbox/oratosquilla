@@ -1,4 +1,5 @@
 use super::direction::Direction;
+use super::search_info::SearchInfo;
 
 bitflags! {
     #[derive(Default)]
@@ -18,7 +19,7 @@ bitflags! {
         /// 逆順にたどった際の最短になっている場合はtrue
         const IS_ANSWER = 0x00_00_00_20;
         /// Goal発見後の探索で、理想最短コストが既存のコストを上回っている場合は探索しない
-        const IS_INVALIDATED = 0x00_00_00_20;
+        const IS_INVALIDATED = 0x00_00_00_40;
 
 
         /// 右方向の壁が存在する
@@ -40,7 +41,7 @@ pub struct Cell {
     pub cost: usize,
     /// どのマスから来たか, cost_dirtyをつける際は付け替える
     /// goalからstartに戻る際に、最小コストの単方向リストとして完成しているはず
-    pub from_dir: Direction,
+    pub from_info: SearchInfo,
     /// ステータスフラグ色々
     pub flag: CellFlag,
 }
@@ -48,7 +49,7 @@ impl Default for Cell {
     fn default() -> Self {
         Self {
             cost: std::usize::MAX,
-            from_dir: Direction::NoDir,
+            from_info: SearchInfo::default(),
             flag: CellFlag::NO_FLAG,
         }
     }
@@ -56,16 +57,19 @@ impl Default for Cell {
 impl Cell {
     /// コストがより良い方に更新します
     /// もし既存のコストより良いものが反映された場合stateが変更される
-    pub fn update_cost(&mut self, new_cost: usize) {
+    /// 新しい値が代入されたらtrueが変える
+    pub fn update_cost(&mut self, new_cost: usize, from_info: SearchInfo) {
         self.cost = if self.flag.contains(CellFlag::IS_COST_AVAILABLE) {
             if self.cost <= new_cost {
                 self.cost
             } else {
                 // より小さいコストでいけるのでフラグを立てておく
                 self.flag.insert(CellFlag::IS_COST_DIRTY);
+                self.from_info = from_info;
                 new_cost
             }
         } else {
+            self.from_info = from_info;
             new_cost
         };
         self.flag.insert(CellFlag::IS_COST_AVAILABLE);

@@ -1,6 +1,6 @@
-use super::point::Point;
 use super::cell::*;
 use super::explorer::*;
+use super::point::Point;
 
 /// 実機から迷路情報の更新に使う情報
 #[derive(Debug)]
@@ -97,6 +97,6 @@ impl Explorer {
         // 探索済セルに追加
         self.cells[info.p.y][info.p.x]
             .flag
-            .contains(CellFlag::IS_UPDATED);
+            .insert(CellFlag::IS_UPDATED);
     }
 }

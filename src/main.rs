@@ -246,4 +246,5 @@ mod test {
 }
 fn main() {
     // use oratosquilla::prelude::*;
+    // test::no_wall_move_xy();
 }

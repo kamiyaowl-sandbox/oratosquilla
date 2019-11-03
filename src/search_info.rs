@@ -1,15 +1,15 @@
-use super::point::Point;
-use super::explorer::*;
 use super::cell::*;
 use super::direction::Direction;
+use super::explorer::*;
+use super::point::Point;
 
 pub const SEARCH_INFO_STORE_SIZE: usize = MAZE_WIDTH * MAZE_HEIGHT; // 暫定値、組み込みはSRAMが貧相だぞ
 
 /// 普段はARMなのでx,y等すべてu32で扱いたいが、サイズがでかくなるのでここだけ圧縮する
 #[derive(Copy, Clone, Debug)]
 pub struct SearchInfo {
-    x: u8,
-    y: u8,
+    pub x: u8,
+    pub y: u8,
 }
 impl Default for SearchInfo {
     fn default() -> Self {
@@ -19,6 +19,24 @@ impl Default for SearchInfo {
         }
     }
 }
+impl SearchInfo {
+    pub fn from(p: Point) -> SearchInfo {
+        debug_assert!(p.x < 0x100);
+        debug_assert!(p.y < 0x100);
+
+        SearchInfo {
+            x: p.x as u8,
+            y: p.y as u8,
+        }
+    }
+    pub fn to_point(&self) -> Point {
+        Point {
+            x: usize::from(self.x),
+            y: usize::from(self.y),
+        }
+    }
+}
+
 /// Stackにして深さ優先、追加履歴が可能な限り近いところから取り出す
 pub struct SearchInfoProvider {
     pub datas: [SearchInfo; SEARCH_INFO_STORE_SIZE],
@@ -44,14 +62,7 @@ impl SearchInfoProvider {
     }
     pub fn push(&mut self, p: Point) -> bool {
         if self.wr_ptr < (SEARCH_INFO_STORE_SIZE - 1) {
-            debug_assert!(p.x < 0x100);
-            debug_assert!(p.y < 0x100);
-
-            let data = SearchInfo {
-                x: p.x as u8,
-                y: p.y as u8,
-            };
-            self.datas[self.wr_ptr] = data;
+            self.datas[self.wr_ptr] = SearchInfo::from(p);
             self.wr_ptr += 1;
             true
         } else {
@@ -64,11 +75,7 @@ impl SearchInfoProvider {
         if self.wr_ptr > 0 {
             self.wr_ptr -= 1; // read有効データは書き込み先のひとつ下
             let data = self.datas[self.wr_ptr];
-
-            Some(Point {
-                x: usize::from(data.x),
-                y: usize::from(data.y),
-            })
+            Some(data.to_point())
         } else {
             None
         }
@@ -219,9 +226,15 @@ impl Explorer {
         if is_passing_down_right {
             targets.push((p.get_around(Direction::DownRight), None));
         }
+
+        // Cellの情報に埋め込む
+        let info = SearchInfo::from(p);
+
         for (target_point, target_cost) in &mut targets {
             // コスト更新
-            self.cells[target_point.y][target_point.x].update_cost(current_cost);
+            self.cells[target_point.y][target_point.x].update_cost(current_cost, info);
+            // TODO: cost dirtyの解消
+
             // 検索予約に追加
             if !self.cells[target_point.y][target_point.x]
                 .flag
@@ -230,14 +243,30 @@ impl Explorer {
                     .flag
                     .contains(CellFlag::IS_PROVIDER_PUSHED)
             {
+                // 検索履歴に残す
                 self.cells[target_point.y][target_point.x]
                     .flag
                     .insert(CellFlag::IS_PROVIDER_PUSHED);
+                // 原位置からの最短予測値を算出
+                let cost = self.cells[target_point.y][target_point.x].cost
+                    + self.goal.distance(*target_point);
+                // 既存の最短コストを理想値時点で改善できない場所は省略する
+                if let Some(min_cost) = self.min_cost {
+                    if min_cost < cost {
+                        self.cells[target_point.y][target_point.x]
+                            .flag
+                            .insert(CellFlag::IS_INVALIDATED);
+                        continue;
+                    }
+                }
+                // Queue追加時の優先度判断用に、最短予測値を使う(A*参考)
+                *target_cost = Some(cost);
 
-                *target_cost = Some(
-                    self.cells[target_point.y][target_point.x].cost
-                        + self.goal.distance(*target_point),
-                );
+                // ゴールだった場合は状態更新
+                if *target_point == self.goal {
+                    debug_assert!(self.goal.distance(*target_point) == 0);
+                    self.min_cost = *target_cost;
+                }
             }
         }
 

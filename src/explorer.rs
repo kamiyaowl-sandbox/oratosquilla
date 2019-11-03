@@ -1,17 +1,22 @@
+use super::cell::*;
 use super::point::Point;
 use super::search_info::*;
-use super::cell::*;
-
 
 pub const MAZE_WIDTH: usize = 32;
 pub const MAZE_HEIGHT: usize = 32;
 
 /// 迷路管理の親
 pub struct Explorer {
-    pub cells: [[Cell; MAZE_WIDTH]; MAZE_HEIGHT],
+    /// 開始位置
     pub start: Point,
+    /// ゴール位置
     pub goal: Point,
+    /// 各マスごとの情報
+    pub cells: [[Cell; MAZE_WIDTH]; MAZE_HEIGHT],
+    /// 最短経路探索先供給
     pub provider: SearchInfoProvider,
+    /// 現在の最小コスト、ゴールするまではNone
+    pub min_cost: Option<usize>,
 }
 
 impl Default for Explorer {
@@ -21,6 +26,7 @@ impl Default for Explorer {
             start: Point { x: 0, y: 0 },
             goal: Point { x: 0, y: 0 },
             provider: SearchInfoProvider::default(),
+            min_cost: None,
         }
     }
 }
@@ -54,7 +60,7 @@ impl Explorer {
     /// 現在の迷路情報を出力
     /// TODO: no_stdでの関数削除、というかもっとリッチにしろ
     pub fn debug_print(&self, filename: &str, header: &str) -> Result<(), std::io::Error> {
-        const CELL_WIDTH: usize = 6;
+        const CELL_WIDTH: usize = 7;
         const CELL_HEIGHT: usize = 3;
         const UNKNOWN_STR: &str = "?";
         const NO_WALL_STR: &str = " ";
@@ -113,54 +119,61 @@ impl Explorer {
                 for i in 0..MAZE_WIDTH {
                     // 壁間の空間
                     match local_j {
-                        1 if self.cells[MAZE_HEIGHT - 1 - j][i]
+                        0 if self.cells[MAZE_HEIGHT - 1 - j][i]
                             .flag
                             .contains(CellFlag::IS_COST_AVAILABLE) =>
                         {
-                            write!(out, " {:>4} ", self.cells[MAZE_HEIGHT - 1 - j][i].cost)?
+                            write!(out, "  {:>4} ", self.cells[MAZE_HEIGHT - 1 - j][i].cost)?;
                         }
-                        2 if self.start.x == i && self.start.y == (MAZE_HEIGHT - 1 - j) => {
-                            write!(out, " *SS* ")?
+                        1 if self.cells[MAZE_HEIGHT - 1 - j][i]
+                            .flag
+                            .contains(CellFlag::IS_PROVIDER_PUSHED)
+                            && self.cells[MAZE_HEIGHT - 1 - j][i].from_info.x < (MAZE_WIDTH as u8) =>
+                        {
+                            write!(
+                                out,
+                                "({:>2},{:>2})",
+                                self.cells[MAZE_HEIGHT - 1 - j][i].from_info.x,
+                                self.cells[MAZE_HEIGHT - 1 - j][i].from_info.y
+                            )?;
                         }
-                        2 if self.goal.x == i && self.goal.y == (MAZE_HEIGHT - 1 - j) => {
-                            write!(out, " *GG* ")?
+                        2 => {
+                            let f = self.cells[MAZE_HEIGHT - 1 - j][i].flag;
+                            write!(
+                                out,
+                                " {}{}{}{}{}{}",
+                                if f.contains(CellFlag::IS_ANSWER) {
+                                    "A"
+                                } else {
+                                    " "
+                                },
+                                if f.contains(CellFlag::IS_INVALIDATED) {
+                                    "I"
+                                } else {
+                                    " "
+                                },
+                                if f.contains(CellFlag::IS_COST_DIRTY) {
+                                    "D"
+                                } else {
+                                    " "
+                                },
+                                if f.contains(CellFlag::IS_PROVIDER_PUSHED) {
+                                    "P"
+                                } else {
+                                    " "
+                                },
+                                if f.contains(CellFlag::IS_SEARCH_AROUND) {
+                                    "S"
+                                } else {
+                                    " "
+                                },
+                                if f.contains(CellFlag::IS_UPDATED) {
+                                    "U"
+                                } else {
+                                    " "
+                                },
+                            )?;
                         }
-                        2 => write!(
-                            out,
-                            " {}{}{}{} ",
-                            if self.cells[MAZE_HEIGHT - 1 - j][i]
-                                .flag
-                                .contains(CellFlag::IS_UPDATED)
-                            {
-                                "U"
-                            } else {
-                                " "
-                            },
-                            if self.cells[MAZE_HEIGHT - 1 - j][i]
-                                .flag
-                                .contains(CellFlag::IS_SEARCH_AROUND)
-                            {
-                                "S"
-                            } else {
-                                " "
-                            },
-                            if self.cells[MAZE_HEIGHT - 1 - j][i]
-                                .flag
-                                .contains(CellFlag::IS_PROVIDER_PUSHED)
-                            {
-                                "P"
-                            } else {
-                                " "
-                            },
-                            if self.cells[MAZE_HEIGHT - 1 - j][i]
-                                .flag
-                                .contains(CellFlag::IS_COST_DIRTY)
-                            {
-                                "D"
-                            } else {
-                                " "
-                            }
-                        )?,
                         _ => {
                             for _ in 0..CELL_WIDTH {
                                 write!(out, "{}", NO_WALL_STR)?;
