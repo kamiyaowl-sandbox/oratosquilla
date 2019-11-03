@@ -359,8 +359,8 @@ impl Maze {
     /// 現在の迷路情報を出力
     /// TODO: no_stdでの関数削除、というかもっとリッチにしろ
     pub fn debug_print(&self, filename: &str, header: &str) -> Result<(), std::io::Error> {
-        const CELL_WIDTH: usize = 4;
-        const CELL_HEIGHT: usize = 2;
+        const CELL_WIDTH: usize = 6;
+        const CELL_HEIGHT: usize = 3;
         const UNKNOWN_STR: &str = "?";
         const NO_WALL_STR: &str = " ";
         const WALL_STR: &str = "+";
@@ -384,6 +384,7 @@ impl Maze {
         for _ in 0..(CELL_HEIGHT + 1) * MAZE_WIDTH {
             write!(out, "=")?;
         }
+        writeln!(out, "")?;
 
         for j in 0..MAZE_HEIGHT {
             //printのy方向と反転しているので注意
@@ -407,17 +408,25 @@ impl Maze {
                 for i in 0..MAZE_WIDTH {
                     // 壁間の空間
                     match local_j {
-                        0 if self.start.x == i && self.start.y == (MAZE_HEIGHT - 1 - j) => {
-                            write!(out, " SS ")?
-                        }
-                        0 if self.goal.x == i && self.goal.y == (MAZE_HEIGHT - 1 - j) => {
-                            write!(out, " GG ")?
-                        }
                         1 if self.cells[MAZE_HEIGHT - 1 - j][i].cost.is_some() => write!(
                             out,
-                            "{:>4}",
+                            " {:>4} ",
                             self.cells[MAZE_HEIGHT - 1 - j][i].cost.unwrap()
                         )?,
+                        2 if self.start.x == i && self.start.y == (MAZE_HEIGHT - 1 - j) => {
+                            write!(out, " *SS* ")?
+                        }
+                        2 if self.goal.x == i && self.goal.y == (MAZE_HEIGHT - 1 - j) => {
+                            write!(out, " *GG* ")?
+                        }
+                        2 => {
+                            write!(out, " {}{}{}{} ",
+                                if self.cells[MAZE_HEIGHT - 1 - j][i].is_updated { "U" } else { " " },
+                                if self.cells[MAZE_HEIGHT - 1 - j][i].is_search_around { "S" } else { " " },
+                                if self.cells[MAZE_HEIGHT - 1 - j][i].is_provider_pushed { "P" } else { " " },
+                                if self.cells[MAZE_HEIGHT - 1 - j][i].is_cost_dirty { "D" } else { " " }
+                            )?
+                        },
                         _ => {
                             for _ in 0..CELL_WIDTH {
                                 write!(out, "{}", NO_WALL_STR)?;
