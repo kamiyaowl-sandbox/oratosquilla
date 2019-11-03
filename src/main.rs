@@ -1,4 +1,5 @@
 mod maze {
+    extern crate arrayvec;
     pub const MAZE_WIDTH: usize = 32;
     pub const MAZE_HEIGHT: usize = 32;
     pub const SEARCH_INFO_STORE_SIZE: usize = 64; // 暫定値、組み込みはSRAMが貧相だぞ
@@ -223,40 +224,116 @@ mod maze {
             }
             // 探索済セルに追加
             self.cells[info.p.y][info.p.x].is_updated = true;
-            // 周辺セルを読み込む
-            self.add_targets(info.p);
         }
         /// 周辺セルを探索対象として追加します
         /// 追加する際に優先度が高い順になるようにすることでa*もどきっぽく振る舞います
-        fn add_targets(&mut self, p: Point) {
+        pub fn fetch_targets(&mut self, p: Point) {
             debug_assert!(self.cells[p.y][p.x].cost.is_some());
-
-            const UP: usize = 0;
-            const DOWN: usize = 1;
-            const LEFT: usize = 2;
-            const RIGHT: usize = 3;
-            const UP_LEFT: usize = 4;
-            const UP_RIGHT: usize = 5;
-            const DOWN_LEFT: usize = 6;
-            const DOWN_RIGHT: usize = 7;
-            const TARGET_NUM: usize = 8;
-
             let current_cost = self.cells[p.y][p.x].cost.unwrap() + 1;
+
             // 座標, cost_total
             // costとcost_totalを更新してソートして追加する
-            let mut targets: [Option<(Point, usize)>; TARGET_NUM] = [None; TARGET_NUM];
+            use arrayvec::ArrayVec;
+            const TARGET_NUM: usize = 8; // 8方位
+            let mut targets = ArrayVec::<[(Point, Option<usize>); TARGET_NUM]>::new();
 
-            // 通過可能かどうか
-            let is_passing_up =
-                p.y < MAZE_HEIGHT - 1 && self.cells[p.y][p.x].up_wall == Some(false);
+            // 探索Stackに余裕がなければ諦める
+            if TARGET_NUM > self.provider.get_size() {
+                return;
+            }
+
+            // 上下左右の区画に移動可能かを判定する
+            let is_passing_up = self.cells[p.y][p.x].up_wall == Some(false);
+            let is_passing_right = self.cells[p.y][p.x].right_wall == Some(false);
+            let is_passing_down = p.y > 0 && self.cells[p.y - 1][p.x].up_wall == Some(false);
+            let is_passing_left = p.x > 0 && self.cells[p.y][p.x - 1].right_wall == Some(false);
+            // 斜め方向の区画に移動可能か判定する。斜め走行前提
+            // 迂回ルートは2種類あるので、どちらかを満たしていればよい
+            let is_passing_up_left = (p.x > 0)
+                && ((is_passing_up && self.cells[p.y + 1][p.x - 1].right_wall == Some(false))
+                    || (is_passing_left && self.cells[p.y][p.x - 1].up_wall == Some(false)));
+            let is_passing_up_right = (is_passing_up
+                && self.cells[p.y + 1][p.x].right_wall == Some(false))
+                || (is_passing_right && self.cells[p.y][p.x + 1].up_wall == Some(false));
+
+            let is_passing_down_left = (p.x > 0 && p.y > 0)
+                && ((is_passing_down && self.cells[p.y - 1][p.x - 1].right_wall == Some(false))
+                    || (is_passing_left && self.cells[p.y - 1][p.x - 1].up_wall == Some(false)));
+            let is_passing_down_right = (p.y > 0)
+                && ((is_passing_down && self.cells[p.y - 1][p.x].right_wall == Some(false))
+                    || (is_passing_right && self.cells[p.y - 1][p.x].up_wall == Some(false)));
 
             if is_passing_up {
+                targets.push((Point { x: p.x, y: p.y + 1 }, None));
+            }
+            if is_passing_right {
+                targets.push((Point { x: p.x + 1, y: p.y }, None));
+            }
+            if is_passing_down {
+                targets.push((Point { x: p.x, y: p.y - 1 }, None));
+            }
+            if is_passing_left {
+                targets.push((Point { x: p.x - 1, y: p.y }, None));
+            }
+            if is_passing_up_left {
+                targets.push((
+                    Point {
+                        x: p.x - 1,
+                        y: p.y + 1,
+                    },
+                    None,
+                ));
+            }
+            if is_passing_up_right {
+                targets.push((
+                    Point {
+                        x: p.x + 1,
+                        y: p.y + 1,
+                    },
+                    None,
+                ));
+            }
+            if is_passing_down_left {
+                targets.push((
+                    Point {
+                        x: p.x - 1,
+                        y: p.y - 1,
+                    },
+                    None,
+                ));
+            }
+            if is_passing_down_right {
+                targets.push((
+                    Point {
+                        x: p.x + 1,
+                        y: p.y - 1,
+                    },
+                    None,
+                ));
+            }
+            for (target_point, target_cost) in &mut targets {
                 // コスト更新
-                self.cells[p.y + 1][p.x].update_cost(current_cost);
-                if !self.cells[p.y + 1][p.x].is_search_around {
-                    let p = Point { x: p.x, y: p.y + 1 };
-                    let total = self.cells[p.y + 1][p.x].cost.unwrap() + self.goal.distance(p);
-                    targets[UP] = Some((p, total));
+                self.cells[target_point.y][target_point.x].update_cost(current_cost);
+                if !self.cells[target_point.y][target_point.x].is_search_around {
+                    *target_cost = Some(
+                        self.cells[target_point.y + 1][target_point.x].cost.unwrap()
+                            + self.goal.distance(*target_point),
+                    );
+                }
+            }
+
+            // コストの大きい順に追加する
+            targets.sort_by_key(|&(_point, cost)| {
+                if let Some(c) = cost {
+                    c
+                } else {
+                    std::usize::MAX
+                }
+            });
+            targets.reverse();
+            for (target_point, target_cost) in &targets {
+                if let Some(_) = target_cost {
+                    self.provider.push(*target_point);
                 }
             }
         }
