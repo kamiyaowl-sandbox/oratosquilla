@@ -1,12 +1,38 @@
 mod maze {
     pub const MAZE_WIDTH: usize = 32;
     pub const MAZE_HEIGHT: usize = 32;
+    pub const SEARCH_INFO_STORE_SIZE: usize = 64; // 暫定値、組み込みはSRAMが貧相だぞ
 
+    /// 座標
     #[derive(Copy, Clone, Debug)]
     pub struct Point {
         pub x: usize,
         pub y: usize,
     }
+    impl Default for Point {
+        fn default() -> Self {
+            Self {
+                x: 0,
+                y: 0,
+            }
+        }
+    }
+
+    /// セルの検索状態
+    #[derive(Copy,Clone,Debug)]
+    pub enum SearchState {
+        /// 初期状態
+        Init, 
+        /// センサ情報更新済
+        Updated,
+        /// 周りのセルをSearchInfoProviderに追加済
+        /// 探索状態としては最終
+        AroundSearchReserved,
+        /// 最短経路になっている
+        /// 探索後に指定
+        Answer,
+    }
+
     /// 各区画単位の管理情報
     #[derive(Copy, Clone, Debug)]
     pub struct Cell {
@@ -16,6 +42,8 @@ mod maze {
         pub right_wall: Option<bool>,
         /// ここまでの到達に必要な手数
         pub cost: Option<usize>,
+        /// セルの探索状態
+        pub state: SearchState,
     }
 
     impl Default for Cell {
@@ -24,6 +52,7 @@ mod maze {
                 up_wall: None,
                 right_wall: None,
                 cost: None,
+                state: SearchState::Init,
             }
         }
     }
@@ -31,12 +60,57 @@ mod maze {
     /// 実機から迷路情報の更新に使う情報
     #[derive(Debug)]
     pub struct UpdateInfo {
+        /// 更新対象の区画
         pub p: Point,
         pub up: Option<bool>,
         pub down: Option<bool>,
         pub left: Option<bool>,
         pub right: Option<bool>,
     }
+
+    impl Default for UpdateInfo {
+        fn default() -> Self {
+            Self {
+                p: Point::default(),
+                up: None,
+                down: None,
+                left: None,
+                right: None,
+            }
+        }
+    }
+
+    /// 探索対象のリスト
+    #[derive(Copy, Clone, Debug)]
+    pub struct SearchInfo {
+        /// 探索元座標、コスト計算に使う
+        pub from: Point,
+        /// 探索先座標
+        pub to: Point,
+    }
+
+    impl Default for SearchInfo {
+        fn default() -> Self {
+            Self {
+                from: Point::default(),
+                to: Point::default(),
+            }
+        }
+    }
+
+    /// Stackにして深さ優先、追加履歴が可能な限り近いところから取り出す
+    pub struct SearchInfoProvider {
+        pub infos: [SearchInfo; SEARCH_INFO_STORE_SIZE],
+    }
+    impl Default for SearchInfoProvider {
+        fn default() -> Self {
+            Self {
+                infos: [SearchInfo::default(); SEARCH_INFO_STORE_SIZE],
+            }
+        }
+    }
+
+
 
     use std::ops::Sub;
     impl Sub for Point {
@@ -60,7 +134,6 @@ mod maze {
     #[derive(Debug)]
     pub struct Maze {
         pub cells: [[Cell; MAZE_WIDTH]; MAZE_HEIGHT],
-        pub previous: Option<Point>,
         pub start: Point,
         pub goal: Point,
     }
@@ -69,7 +142,6 @@ mod maze {
         fn default() -> Self {
             Self {
                 cells: [[Cell::default(); MAZE_WIDTH]; MAZE_HEIGHT],
-                previous: None,
                 start: Point { x: 0, y: 0 },
                 goal: Point { x: 0, y: 0 },
             }
@@ -77,17 +149,21 @@ mod maze {
     }
 
     impl Maze {
-        pub fn init(&mut self, goal: Point) {
-            self.cells = [[Cell::default(); MAZE_WIDTH]; MAZE_HEIGHT];
-            self.start = Point { x: 0, y: 0 };
-            self.goal = goal;
+        pub fn new(goal: Point) -> Maze {
+            let mut dst = Maze::default();
+
+            dst.cells = [[Cell::default(); MAZE_WIDTH]; MAZE_HEIGHT];
+            dst.start = Point { x: 0, y: 0 };
+            dst.goal = goal;
             // 上端、右端の壁初期化
             for j in 0..MAZE_HEIGHT {
-                self.cells[j][MAZE_WIDTH - 1].right_wall = Some(true);
+                dst.cells[j][MAZE_WIDTH - 1].right_wall = Some(true);
             }
             for i in 0..MAZE_WIDTH {
-                self.cells[MAZE_HEIGHT - 1][i].up_wall = Some(true);
+                dst.cells[MAZE_HEIGHT - 1][i].up_wall = Some(true);
             }
+            dst.cells[0][0].cost = Some(0);
+            dst
         }
         /// 壁情報を更新する
         pub fn update(&mut self, info: &UpdateInfo) {
@@ -111,70 +187,83 @@ mod maze {
                     self.cells[info.p.y][info.p.x - 1].right_wall = Some(left_wall);
                 }
             }
-            // 最終更新履歴を残す
-            self.previous = Some(info.p);
         }
 
         /// 現在の迷路情報を出力
-        /// TODO: no_stdでの関数削除
-        pub fn debug_print(&self) {
-            let cellWidth = 4;
-            let cellHeight = 2;
-            let unknownStr = "?";
-            let noWallStr = " ";
-            let wallStr = "+";
-            let intersectStr = ".";
+        /// TODO: no_stdでの関数削除、というかもっとリッチにしろ
+        pub fn debug_print(&self) -> Result<(), std::io::Error> {
+            const CELL_WIDTH: usize = 4;
+            const CELL_HEIGHT: usize = 2;
+            const UNKNOWN_STR: &str = "?";
+            const NO_WALL_STR: &str  = " ";
+            const WALL_STR: &str  = "+";
+            const INTERSECT_STR: &str  = ".";
+
+            // stdoutをロックしてまとめて書く
+            use std::io::{stdout, Write, BufWriter};
+            let out = stdout();
+            let mut out = BufWriter::new(out.lock());
 
             for j in 0..MAZE_HEIGHT {//printのy方向と反転しているので注意
                 // とりあえず1行書く
                 for i in 0..MAZE_WIDTH {
-                    print!("{}", intersectStr);
+                    write!(out, "{}", INTERSECT_STR)?;
                     // 水平壁
                     let c = match self.cells[MAZE_HEIGHT - 1 - j][i].up_wall {
-                        Some(true) => wallStr,
-                        Some(false) => noWallStr,
-                        None => unknownStr,
+                        Some(true) => WALL_STR,
+                        Some(false) => NO_WALL_STR,
+                        None => UNKNOWN_STR,
                     };
-                    for _ in 0..cellWidth {
-                        print!("{}", c);
+                    for _ in 0..CELL_WIDTH {
+                        write!(out, "{}", c)?;
                     }
                 }
-                println!("{}", intersectStr);
+                writeln!(out, "{}", INTERSECT_STR)?;
                 // 残りの行
-                for _ in 0..cellHeight {
-                    print!("{}", wallStr); // 左端
+                for local_j in 0..CELL_HEIGHT {
+                    write!(out, "{}", WALL_STR)?; // 左端
                     for i in 0..MAZE_WIDTH {
-                        // 空間
-                        for _ in 0..cellWidth {
-                            print!("{}", noWallStr); // todo:cost表示
+                        // 壁間の空間
+                        match local_j {
+                            0 if self.start.x == i && self.start.y == (MAZE_HEIGHT - 1 - j) => write!(out, " SS ")?,
+                            0 if self.goal.x == i && self.goal.y == (MAZE_HEIGHT - 1 - j) => write!(out, " GG ")?,
+                            1 if self.cells[MAZE_HEIGHT - 1 - j][i].cost.is_some() => write!(out, "{:>4}", self.cells[MAZE_HEIGHT - 1 - j][i].cost.unwrap())?,
+                            _ => {
+                                for _ in 0..CELL_WIDTH {
+                                    write!(out, "{}", NO_WALL_STR)?;
+                                }
+                            }
                         }
                         // 垂直壁
                         let c = match self.cells[MAZE_HEIGHT - 1 - j][i].right_wall {
-                            Some(true) => wallStr,
-                            Some(false) => noWallStr,
-                            None => unknownStr,
+                            Some(true) => WALL_STR,
+                            Some(false) => NO_WALL_STR,
+                            None => UNKNOWN_STR,
                         };
-                        print!("{}", c);
+                        write!(out, "{}", c)?;
                     }
-                    println!("");
+                    writeln!(out, "")?;
                 }
             }
             // 一番下
             for _i in 0..MAZE_WIDTH {
-                print!("{}", intersectStr);
-                for _ in 0..cellWidth {
-                    print!("{}", wallStr);
+                write!(out, "{}", INTERSECT_STR)?;
+                for _ in 0..CELL_WIDTH {
+                    write!(out, "{}", WALL_STR)?;
                 }
             }
-            println!("");
+            writeln!(out, "")?;
 
+            Ok(())
         }
     }
 }
 
 fn main() {
     use maze::*;
-    let mut m = Maze::default();
-    m.init(Point{x: 10, y:10});
+
+    let mut m = Maze::new(Point{x: 10, y:10});
+    let info = UpdateInfo::default();
+    m.update(&info);
     m.debug_print();
 }
