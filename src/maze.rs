@@ -1,7 +1,7 @@
 extern crate arrayvec;
 pub const MAZE_WIDTH: usize = 32;
 pub const MAZE_HEIGHT: usize = 32;
-pub const SEARCH_INFO_STORE_SIZE: usize = 64; // 暫定値、組み込みはSRAMが貧相だぞ
+pub const SEARCH_INFO_STORE_SIZE: usize = MAZE_WIDTH * MAZE_HEIGHT; // 暫定値、組み込みはSRAMが貧相だぞ
 
 /// 座標
 #[derive(Copy, Clone, Debug)]
@@ -28,6 +28,8 @@ pub struct Cell {
     pub is_updated: bool,
     /// 周辺セルを探索済
     pub is_search_around: bool,
+    /// 検索対象リストに追加されたことがあればtrue
+    pub is_provider_pushed: bool,
     /// 当初の探索時より少ないコストで到達できる場合
     pub is_cost_dirty: bool,
 }
@@ -39,6 +41,7 @@ impl Default for Cell {
             cost: None,
             is_updated: false,
             is_search_around: false,
+            is_provider_pushed: false,
             is_cost_dirty: false,
         }
     }
@@ -131,6 +134,7 @@ impl SearchInfoProvider {
             true
         } else {
             // 無理
+            // TODO: 古すぎる探索は省略していいならoverwriteするような仕組みがあってもよい?
             false
         }
     }
@@ -199,6 +203,7 @@ impl Maze {
             dst.cells[MAZE_HEIGHT - 1][i].up_wall = Some(true);
         }
         dst.cells[0][0].cost = Some(0);
+        dst.cells[0][0].is_provider_pushed = true; // 0を再度探索する必要はない
         dst
     }
     /// 次に進むべき座標を取得します
@@ -267,7 +272,7 @@ impl Maze {
                 || (is_passing_left && self.cells[p.y - 1][p.x - 1].up_wall == Some(false)));
         let is_passing_down_right = (p.y > 0)
             && ((is_passing_down && self.cells[p.y - 1][p.x].right_wall == Some(false))
-                || (is_passing_right && self.cells[p.y - 1][p.x].up_wall == Some(false)));
+                || (is_passing_right && self.cells[p.y - 1][p.x + 1].up_wall == Some(false)));
 
         if is_passing_up {
             targets.push((Point { x: p.x, y: p.y + 1 }, None));
@@ -320,7 +325,11 @@ impl Maze {
         for (target_point, target_cost) in &mut targets {
             // コスト更新
             self.cells[target_point.y][target_point.x].update_cost(current_cost);
-            if !self.cells[target_point.y][target_point.x].is_search_around {
+            // 検索予約に追加
+            if !self.cells[target_point.y][target_point.x].is_search_around &&
+            !self.cells[target_point.y][target_point.x].is_provider_pushed {
+                self.cells[target_point.y][target_point.x].is_provider_pushed = true;
+
                 *target_cost = Some(
                     self.cells[target_point.y][target_point.x].cost.unwrap()
                         + self.goal.distance(*target_point),
@@ -345,12 +354,11 @@ impl Maze {
 
         // 周辺探索完了フラグ
         self.cells[p.y][p.x].is_search_around = true;
-
     }
 
     /// 現在の迷路情報を出力
     /// TODO: no_stdでの関数削除、というかもっとリッチにしろ
-    pub fn debug_print(&self) -> Result<(), std::io::Error> {
+    pub fn debug_print(&self, filename: &str, header: &str) -> Result<(), std::io::Error> {
         const CELL_WIDTH: usize = 4;
         const CELL_HEIGHT: usize = 2;
         const UNKNOWN_STR: &str = "?";
@@ -358,10 +366,24 @@ impl Maze {
         const WALL_STR: &str = "+";
         const INTERSECT_STR: &str = ".";
 
-        // stdoutをロックしてまとめて書く
-        use std::io::{stdout, BufWriter, Write};
-        let out = stdout();
-        let mut out = BufWriter::new(out.lock());
+        use std::fs::OpenOptions;
+        use std::io::prelude::*;
+        use std::io::BufWriter;
+        let file = OpenOptions::new()
+            .write(true)
+            .append(true)
+            .create(true)
+            .open(filename.to_string())?;
+        let mut out = BufWriter::new(file);
+
+        // おしゃれなヘッダ
+        for _ in 0..(CELL_HEIGHT + 1) * MAZE_WIDTH {
+            write!(out, "=")?;
+        }
+        writeln!(out, "\n{}", header.to_string())?;
+        for _ in 0..(CELL_HEIGHT + 1) * MAZE_WIDTH {
+            write!(out, "=")?;
+        }
 
         for j in 0..MAZE_HEIGHT {
             //printのy方向と反転しているので注意
@@ -420,7 +442,8 @@ impl Maze {
                 write!(out, "{}", WALL_STR)?;
             }
         }
-        writeln!(out, "")?;
+        writeln!(out, "\n\n\n")?;
+        out.flush()?;
 
         Ok(())
     }
