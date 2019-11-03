@@ -38,37 +38,44 @@ bitflags! {
         const IS_SEARCH_AROUND = 0x00_00_00_02;
         /// 検索対象リストに追加されたことがあればtrue
         const IS_PROVIDER_PUSHED = 0x00_00_00_04;
+        /// コストに有効な値をセットしたことがあればtrue
+        const IS_COST_AVAILABLE = 0x00_00_00_08;
         /// 当初の探索時より少ないコストで到達できる場合フラグを立てる
         /// from_dirで逆順に戻った場合に、コストが非連続になる
-        const IS_COST_DIRTY = 0x00_00_00_08;
+        const IS_COST_DIRTY = 0x00_00_00_10;
         /// 逆順にたどった際の最短になっている場合はtrue
-        const IS_ANSWER = 0x00_00_00_10;
+        const IS_ANSWER = 0x00_00_00_20;
         /// Goal発見後の探索で、理想最短コストが既存のコストを上回っている場合は探索しない
         const IS_INVALIDATED = 0x00_00_00_20;
+
+
+        /// 右方向の壁が存在する
+        const IS_EXISTS_RIGHT_WALL = 0x10_00_00_00;
+        /// 右方向の壁にUpdateをかけたことがある
+        const IS_UPDATED_RIGHT_WALL = 0x20_00_00_00;
+        /// 上方向の壁が存在する
+        const IS_EXISTS_UP_WALL = 0x40_00_00_00;
+        /// 上方向の壁にUpdateをかけたことがある
+        const IS_UPDATED_UP_WALL = 0x80_00_00_00;
     }
 }
 /// 各区画単位の管理情報
+/// Optionはもともとの実態容量の倍になっていそうなので注意
 #[derive(Copy, Clone, Debug)]
 pub struct Cell {
-    // 区画上方向の壁有無
-    pub up_wall: Option<bool>,
-    // 区画右方向の壁有無
-    pub right_wall: Option<bool>,
     /// ここまでの到達に必要な手数(真値)
-    pub cost: Option<usize>,
+    /// IS_COST_AVAILABLEフラグを確認してから使う
+    pub cost: usize,
     /// どのマスから来たか, cost_dirtyをつける際は付け替える
     /// goalからstartに戻る際に、最小コストの単方向リストとして完成しているはず
     pub from_dir: Direction,
     /// ステータスフラグ色々
     pub flag: CellFlag,
-
 }
 impl Default for Cell {
     fn default() -> Self {
         Self {
-            up_wall: None,
-            right_wall: None,
-            cost: None,
+            cost: std::usize::MAX,
             from_dir: Direction::NoDir,
             flag: CellFlag::NO_FLAG,
         }
@@ -78,15 +85,18 @@ impl Cell {
     /// コストがより良い方に更新します
     /// もし既存のコストより良いものが反映された場合stateが変更される
     pub fn update_cost(&mut self, new_cost: usize) {
-        self.cost = Some(match self.cost {
-            None => new_cost,
-            Some(c) if c <= new_cost => c,
-            // コストが小さいルートが発見された
-            _ => {
+        self.cost = if self.flag.contains(CellFlag::IS_COST_AVAILABLE) {
+            if self.cost <= new_cost {
+                self.cost
+            } else {
+                // より小さいコストでいけるのでフラグを立てておく
                 self.flag.insert(CellFlag::IS_COST_DIRTY);
                 new_cost
             }
-        });
+        } else {
+            new_cost
+        };
+        self.flag.insert(CellFlag::IS_COST_AVAILABLE);
     }
 }
 /// 実機から迷路情報の更新に使う情報
@@ -161,8 +171,8 @@ impl SearchInfoProvider {
             self.wr_ptr += 1;
             true
         } else {
-            // 無理
-            // TODO: 古すぎる探索は省略していいならoverwriteするような仕組みがあってもよい?
+            // 無理だけど普通にfalse返すだけで良さげ
+            debug_assert!(false);
             false
         }
     }
@@ -263,13 +273,20 @@ impl Maze {
         dst.goal = goal;
         // 上端、右端の壁初期化
         for j in 0..MAZE_HEIGHT {
-            dst.cells[j][MAZE_WIDTH - 1].right_wall = Some(true);
+            dst.cells[j][MAZE_WIDTH - 1]
+                .flag
+                .insert(CellFlag::IS_EXISTS_RIGHT_WALL | CellFlag::IS_UPDATED_RIGHT_WALL);
         }
         for i in 0..MAZE_WIDTH {
-            dst.cells[MAZE_HEIGHT - 1][i].up_wall = Some(true);
+            dst.cells[MAZE_HEIGHT - 1][i]
+                .flag
+                .insert(CellFlag::IS_EXISTS_UP_WALL | CellFlag::IS_UPDATED_UP_WALL);
         }
-        dst.cells[0][0].cost = Some(0);
-        dst.cells[0][0].flag.insert(CellFlag::IS_PROVIDER_PUSHED); // 0を再度探索する必要はない
+        // 有効コスト設定と検索対象外設定
+        dst.cells[0][0].cost = 0;
+        dst.cells[0][0]
+            .flag
+            .insert(CellFlag::IS_COST_AVAILABLE | CellFlag::IS_PROVIDER_PUSHED);
         dst
     }
     /// 次に進むべき座標を取得します
@@ -280,33 +297,83 @@ impl Maze {
     pub fn update(&mut self, info: &UpdateInfo) {
         debug_assert!(info.p.x < MAZE_WIDTH);
         debug_assert!(info.p.y < MAZE_HEIGHT);
-        debug_assert!(!self.cells[info.p.y][info.p.x].flag.contains(CellFlag::IS_UPDATED));
+        debug_assert!(!self.cells[info.p.y][info.p.x]
+            .flag
+            .contains(CellFlag::IS_UPDATED));
         // 壁情報の更新
         if let Some(up_wall) = info.up {
-            self.cells[info.p.y][info.p.x].up_wall = Some(up_wall);
+            self.cells[info.p.y][info.p.x]
+                .flag
+                .insert(CellFlag::IS_UPDATED_UP_WALL);
+            if up_wall {
+                self.cells[info.p.y][info.p.x]
+                    .flag
+                    .insert(CellFlag::IS_EXISTS_UP_WALL);
+            } else {
+                self.cells[info.p.y][info.p.x]
+                    .flag
+                    .remove(CellFlag::IS_EXISTS_UP_WALL);
+            }
         }
         if let Some(right_wall) = info.right {
-            self.cells[info.p.y][info.p.x].right_wall = Some(right_wall);
+            self.cells[info.p.y][info.p.x]
+                .flag
+                .insert(CellFlag::IS_UPDATED_RIGHT_WALL);
+            if right_wall {
+                self.cells[info.p.y][info.p.x]
+                    .flag
+                    .insert(CellFlag::IS_EXISTS_RIGHT_WALL);
+            } else {
+                self.cells[info.p.y][info.p.x]
+                    .flag
+                    .remove(CellFlag::IS_EXISTS_RIGHT_WALL);
+            }
         }
         // 下、左は隣のセル情報に格納されている
         if info.p.y > 0 {
             if let Some(down_wall) = info.down {
-                self.cells[info.p.y - 1][info.p.x].up_wall = Some(down_wall);
+                self.cells[info.p.y - 1][info.p.x]
+                    .flag
+                    .insert(CellFlag::IS_UPDATED_UP_WALL);
+                if down_wall {
+                    self.cells[info.p.y - 1][info.p.x]
+                        .flag
+                        .insert(CellFlag::IS_EXISTS_UP_WALL);
+                } else {
+                    self.cells[info.p.y - 1][info.p.x]
+                        .flag
+                        .remove(CellFlag::IS_EXISTS_UP_WALL);
+                }
             }
         }
         if info.p.x > 0 {
             if let Some(left_wall) = info.left {
-                self.cells[info.p.y][info.p.x - 1].right_wall = Some(left_wall);
+                self.cells[info.p.y][info.p.x - 1]
+                    .flag
+                    .insert(CellFlag::IS_UPDATED_RIGHT_WALL);
+                if left_wall {
+                    self.cells[info.p.y][info.p.x - 1]
+                        .flag
+                        .insert(CellFlag::IS_EXISTS_RIGHT_WALL);
+                } else {
+                    self.cells[info.p.y][info.p.x - 1]
+                        .flag
+                        .remove(CellFlag::IS_EXISTS_RIGHT_WALL);
+                }
             }
         }
         // 探索済セルに追加
-        self.cells[info.p.y][info.p.x].flag.contains(CellFlag::IS_UPDATED);
+        self.cells[info.p.y][info.p.x]
+            .flag
+            .contains(CellFlag::IS_UPDATED);
     }
     /// 周辺セルを探索対象として追加します
     /// 追加する際に優先度が高い順になるようにすることでa*もどきっぽく振る舞います
     pub fn fetch_targets(&mut self, p: Point) {
-        debug_assert!(self.cells[p.y][p.x].cost.is_some());
-        let current_cost = self.cells[p.y][p.x].cost.unwrap() + 1;
+        debug_assert!(self.cells[p.y][p.x]
+            .flag
+            .contains(CellFlag::IS_COST_AVAILABLE));
+        let current_cost = self.cells[p.y][p.x].cost + 1;
 
         // 座標, cost_total
         // costとcost_totalを更新してソートして追加する
@@ -320,26 +387,100 @@ impl Maze {
         }
 
         // 上下左右の区画に移動可能かを判定する
-        let is_passing_up = p.y < MAZE_HEIGHT - 1 && self.cells[p.y][p.x].up_wall == Some(false);
-        let is_passing_right =
-            p.x < MAZE_WIDTH - 1 && self.cells[p.y][p.x].right_wall == Some(false);
-        let is_passing_down = p.y > 0 && self.cells[p.y - 1][p.x].up_wall == Some(false);
-        let is_passing_left = p.x > 0 && self.cells[p.y][p.x - 1].right_wall == Some(false);
+        let is_passing_up = p.y < MAZE_HEIGHT - 1
+            && self.cells[p.y][p.x]
+                .flag
+                .contains(CellFlag::IS_UPDATED_UP_WALL)
+            && !self.cells[p.y][p.x]
+                .flag
+                .contains(CellFlag::IS_EXISTS_UP_WALL);
+        let is_passing_right = p.x < MAZE_WIDTH - 1
+            && self.cells[p.y][p.x]
+                .flag
+                .contains(CellFlag::IS_UPDATED_RIGHT_WALL)
+            && !self.cells[p.y][p.x]
+                .flag
+                .contains(CellFlag::IS_EXISTS_RIGHT_WALL);
+
+        let is_passing_down = p.y > 0
+            && self.cells[p.y - 1][p.x]
+                .flag
+                .contains(CellFlag::IS_UPDATED_UP_WALL)
+            && !self.cells[p.y - 1][p.x]
+                .flag
+                .contains(CellFlag::IS_EXISTS_UP_WALL);
+        let is_passing_left = p.x > 0
+            && self.cells[p.y][p.x - 1]
+                .flag
+                .contains(CellFlag::IS_UPDATED_RIGHT_WALL)
+            && !self.cells[p.y][p.x - 1]
+                .flag
+                .contains(CellFlag::IS_EXISTS_RIGHT_WALL);
+
         // 斜め方向の区画に移動可能か判定する。斜め走行前提
         // 迂回ルートは2種類あるので、どちらかを満たしていればよい
         let is_passing_up_left = (p.x > 0)
-            && ((is_passing_up && self.cells[p.y + 1][p.x - 1].right_wall == Some(false))
-                || (is_passing_left && self.cells[p.y][p.x - 1].up_wall == Some(false)));
+            && ((is_passing_up
+                && self.cells[p.y + 1][p.x - 1]
+                    .flag
+                    .contains(CellFlag::IS_UPDATED_RIGHT_WALL)
+                && !self.cells[p.y + 1][p.x - 1]
+                    .flag
+                    .contains(CellFlag::IS_EXISTS_RIGHT_WALL))
+                || (is_passing_left
+                    && self.cells[p.y][p.x - 1]
+                        .flag
+                        .contains(CellFlag::IS_UPDATED_UP_WALL)
+                    && !self.cells[p.y][p.x - 1]
+                        .flag
+                        .contains(CellFlag::IS_EXISTS_UP_WALL)));
+
         let is_passing_up_right = (is_passing_up
-            && self.cells[p.y + 1][p.x].right_wall == Some(false))
-            || (is_passing_right && self.cells[p.y][p.x + 1].up_wall == Some(false));
+            && self.cells[p.y + 1][p.x]
+                .flag
+                .contains(CellFlag::IS_UPDATED_RIGHT_WALL)
+            && !self.cells[p.y + 1][p.x]
+                .flag
+                .contains(CellFlag::IS_EXISTS_RIGHT_WALL))
+            || (is_passing_right
+                && self.cells[p.y][p.x + 1]
+                    .flag
+                    .contains(CellFlag::IS_UPDATED_UP_WALL)
+                && !self.cells[p.y][p.x + 1]
+                    .flag
+                    .contains(CellFlag::IS_EXISTS_UP_WALL));
 
         let is_passing_down_left = (p.x > 0 && p.y > 0)
-            && ((is_passing_down && self.cells[p.y - 1][p.x - 1].right_wall == Some(false))
-                || (is_passing_left && self.cells[p.y - 1][p.x - 1].up_wall == Some(false)));
+            && ((is_passing_down
+                && self.cells[p.y - 1][p.x - 1]
+                    .flag
+                    .contains(CellFlag::IS_UPDATED_RIGHT_WALL)
+                && !self.cells[p.y - 1][p.x - 1]
+                    .flag
+                    .contains(CellFlag::IS_EXISTS_RIGHT_WALL))
+                || (is_passing_left
+                    && self.cells[p.y - 1][p.x - 1]
+                        .flag
+                        .contains(CellFlag::IS_UPDATED_UP_WALL)
+                    && !self.cells[p.y - 1][p.x - 1]
+                        .flag
+                        .contains(CellFlag::IS_EXISTS_UP_WALL)));
+
         let is_passing_down_right = (p.y > 0)
-            && ((is_passing_down && self.cells[p.y - 1][p.x].right_wall == Some(false))
-                || (is_passing_right && self.cells[p.y - 1][p.x + 1].up_wall == Some(false)));
+            && ((is_passing_down
+                && self.cells[p.y - 1][p.x]
+                    .flag
+                    .contains(CellFlag::IS_UPDATED_RIGHT_WALL)
+                && !self.cells[p.y - 1][p.x]
+                    .flag
+                    .contains(CellFlag::IS_EXISTS_RIGHT_WALL))
+                || (is_passing_right
+                    && self.cells[p.y - 1][p.x + 1]
+                        .flag
+                        .contains(CellFlag::IS_UPDATED_UP_WALL)
+                    && !self.cells[p.y - 1][p.x + 1]
+                        .flag
+                        .contains(CellFlag::IS_EXISTS_UP_WALL)));
 
         if is_passing_up {
             targets.push((p.get_around(Direction::Up), None));
@@ -369,13 +510,19 @@ impl Maze {
             // コスト更新
             self.cells[target_point.y][target_point.x].update_cost(current_cost);
             // 検索予約に追加
-            if !self.cells[target_point.y][target_point.x].flag.contains(CellFlag::IS_SEARCH_AROUND)
-                && !self.cells[target_point.y][target_point.x].flag.contains(CellFlag::IS_PROVIDER_PUSHED)
+            if !self.cells[target_point.y][target_point.x]
+                .flag
+                .contains(CellFlag::IS_SEARCH_AROUND)
+                && !self.cells[target_point.y][target_point.x]
+                    .flag
+                    .contains(CellFlag::IS_PROVIDER_PUSHED)
             {
-                self.cells[target_point.y][target_point.x].flag.insert(CellFlag::IS_PROVIDER_PUSHED);
+                self.cells[target_point.y][target_point.x]
+                    .flag
+                    .insert(CellFlag::IS_PROVIDER_PUSHED);
 
                 *target_cost = Some(
-                    self.cells[target_point.y][target_point.x].cost.unwrap()
+                    self.cells[target_point.y][target_point.x].cost
                         + self.goal.distance(*target_point),
                 );
             }
@@ -436,10 +583,20 @@ impl Maze {
             for i in 0..MAZE_WIDTH {
                 write!(out, "{}", INTERSECT_STR)?;
                 // 水平壁
-                let c = match self.cells[MAZE_HEIGHT - 1 - j][i].up_wall {
-                    Some(true) => WALL_STR,
-                    Some(false) => NO_WALL_STR,
-                    None => UNKNOWN_STR,
+                let c = if self.cells[MAZE_HEIGHT - 1 - j][i]
+                    .flag
+                    .contains(CellFlag::IS_UPDATED_UP_WALL)
+                {
+                    if self.cells[MAZE_HEIGHT - 1 - j][i]
+                        .flag
+                        .contains(CellFlag::IS_EXISTS_UP_WALL)
+                    {
+                        WALL_STR
+                    } else {
+                        NO_WALL_STR
+                    }
+                } else {
+                    UNKNOWN_STR
                 };
                 for _ in 0..CELL_WIDTH {
                     write!(out, "{}", c)?;
@@ -452,11 +609,12 @@ impl Maze {
                 for i in 0..MAZE_WIDTH {
                     // 壁間の空間
                     match local_j {
-                        1 if self.cells[MAZE_HEIGHT - 1 - j][i].cost.is_some() => write!(
-                            out,
-                            " {:>4} ",
-                            self.cells[MAZE_HEIGHT - 1 - j][i].cost.unwrap()
-                        )?,
+                        1 if self.cells[MAZE_HEIGHT - 1 - j][i]
+                            .flag
+                            .contains(CellFlag::IS_COST_AVAILABLE) =>
+                        {
+                            write!(out, " {:>4} ", self.cells[MAZE_HEIGHT - 1 - j][i].cost)?
+                        }
                         2 if self.start.x == i && self.start.y == (MAZE_HEIGHT - 1 - j) => {
                             write!(out, " *SS* ")?
                         }
@@ -466,22 +624,34 @@ impl Maze {
                         2 => write!(
                             out,
                             " {}{}{}{} ",
-                            if self.cells[MAZE_HEIGHT - 1 - j][i].flag.contains(CellFlag::IS_UPDATED) {
+                            if self.cells[MAZE_HEIGHT - 1 - j][i]
+                                .flag
+                                .contains(CellFlag::IS_UPDATED)
+                            {
                                 "U"
                             } else {
                                 " "
                             },
-                            if self.cells[MAZE_HEIGHT - 1 - j][i].flag.contains(CellFlag::IS_SEARCH_AROUND) {
+                            if self.cells[MAZE_HEIGHT - 1 - j][i]
+                                .flag
+                                .contains(CellFlag::IS_SEARCH_AROUND)
+                            {
                                 "S"
                             } else {
                                 " "
                             },
-                            if self.cells[MAZE_HEIGHT - 1 - j][i].flag.contains(CellFlag::IS_PROVIDER_PUSHED) {
+                            if self.cells[MAZE_HEIGHT - 1 - j][i]
+                                .flag
+                                .contains(CellFlag::IS_PROVIDER_PUSHED)
+                            {
                                 "P"
                             } else {
                                 " "
                             },
-                            if self.cells[MAZE_HEIGHT - 1 - j][i].flag.contains(CellFlag::IS_COST_DIRTY) {
+                            if self.cells[MAZE_HEIGHT - 1 - j][i]
+                                .flag
+                                .contains(CellFlag::IS_COST_DIRTY)
+                            {
                                 "D"
                             } else {
                                 " "
@@ -494,10 +664,20 @@ impl Maze {
                         }
                     }
                     // 垂直壁
-                    let c = match self.cells[MAZE_HEIGHT - 1 - j][i].right_wall {
-                        Some(true) => WALL_STR,
-                        Some(false) => NO_WALL_STR,
-                        None => UNKNOWN_STR,
+                    let c = if self.cells[MAZE_HEIGHT - 1 - j][i]
+                        .flag
+                        .contains(CellFlag::IS_UPDATED_RIGHT_WALL)
+                    {
+                        if self.cells[MAZE_HEIGHT - 1 - j][i]
+                            .flag
+                            .contains(CellFlag::IS_EXISTS_RIGHT_WALL)
+                        {
+                            WALL_STR
+                        } else {
+                            NO_WALL_STR
+                        }
+                    } else {
+                        UNKNOWN_STR
                     };
                     write!(out, "{}", c)?;
                 }
