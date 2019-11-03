@@ -1,4 +1,3 @@
-extern crate arrayvec;
 pub const MAZE_WIDTH: usize = 32;
 pub const MAZE_HEIGHT: usize = 32;
 pub const SEARCH_INFO_STORE_SIZE: usize = MAZE_WIDTH * MAZE_HEIGHT; // 暫定値、組み込みはSRAMが貧相だぞ
@@ -29,6 +28,25 @@ pub enum Direction {
     DownRight,
 }
 
+bitflags! {
+    #[derive(Default)]
+    pub struct CellFlag: u32 {
+        const NO_FLAG = 0x00_00_00_00;
+        /// セルの壁情報が更新済
+        const IS_UPDATED = 0x00_00_00_01;
+        /// 周辺セルを探索済
+        const IS_SEARCH_AROUND = 0x00_00_00_02;
+        /// 検索対象リストに追加されたことがあればtrue
+        const IS_PROVIDER_PUSHED = 0x00_00_00_04;
+        /// 当初の探索時より少ないコストで到達できる場合フラグを立てる
+        /// from_dirで逆順に戻った場合に、コストが非連続になる
+        const IS_COST_DIRTY = 0x00_00_00_08;
+        /// 逆順にたどった際の最短になっている場合はtrue
+        const IS_ANSWER = 0x00_00_00_10;
+        /// Goal発見後の探索で、理想最短コストが既存のコストを上回っている場合は探索しない
+        const IS_INVALIDATED = 0x00_00_00_20;
+    }
+}
 /// 各区画単位の管理情報
 #[derive(Copy, Clone, Debug)]
 pub struct Cell {
@@ -36,27 +54,14 @@ pub struct Cell {
     pub up_wall: Option<bool>,
     // 区画右方向の壁有無
     pub right_wall: Option<bool>,
-    /// ここまでの到達に必要な手数
+    /// ここまでの到達に必要な手数(真値)
     pub cost: Option<usize>,
-
-    // TODO: boolだとサイズがでかくて無理な場合、別クラスでビットフラグ管理で管理
-    /// セルの壁情報が更新済
-    pub is_updated: bool,
-    /// 周辺セルを探索済
-    pub is_search_around: bool,
-    /// 検索対象リストに追加されたことがあればtrue
-    pub is_provider_pushed: bool,
-    /// 当初の探索時より少ないコストで到達できる場合フラグを立てる
-    /// from_dirで逆順に戻った場合に、コストが非連続になる
-    pub is_cost_dirty: bool,
-
-    /// 逆順にたどった際の最短になっている場合はtrue
-    pub is_answer: bool,
-    /// Goal発見後の探索で、理想最短コストが既存のコストを上回っている場合は探索しない
-    pub is_invalidated: bool,
     /// どのマスから来たか, cost_dirtyをつける際は付け替える
     /// goalからstartに戻る際に、最小コストの単方向リストとして完成しているはず
     pub from_dir: Direction,
+    /// ステータスフラグ色々
+    pub flag: CellFlag,
+
 }
 impl Default for Cell {
     fn default() -> Self {
@@ -64,14 +69,8 @@ impl Default for Cell {
             up_wall: None,
             right_wall: None,
             cost: None,
-            is_updated: false,
-            is_search_around: false,
-            is_provider_pushed: false,
-            is_cost_dirty: false,
-
-            is_answer: false,
-            is_invalidated: false,
             from_dir: Direction::NoDir,
+            flag: CellFlag::NO_FLAG,
         }
     }
 }
@@ -84,7 +83,7 @@ impl Cell {
             Some(c) if c <= new_cost => c,
             // コストが小さいルートが発見された
             _ => {
-                self.is_cost_dirty = true;
+                self.flag.insert(CellFlag::IS_COST_DIRTY);
                 new_cost
             }
         });
@@ -270,7 +269,7 @@ impl Maze {
             dst.cells[MAZE_HEIGHT - 1][i].up_wall = Some(true);
         }
         dst.cells[0][0].cost = Some(0);
-        dst.cells[0][0].is_provider_pushed = true; // 0を再度探索する必要はない
+        dst.cells[0][0].flag.insert(CellFlag::IS_PROVIDER_PUSHED); // 0を再度探索する必要はない
         dst
     }
     /// 次に進むべき座標を取得します
@@ -281,7 +280,7 @@ impl Maze {
     pub fn update(&mut self, info: &UpdateInfo) {
         debug_assert!(info.p.x < MAZE_WIDTH);
         debug_assert!(info.p.y < MAZE_HEIGHT);
-        debug_assert!(!self.cells[info.p.y][info.p.x].is_updated);
+        debug_assert!(!self.cells[info.p.y][info.p.x].flag.contains(CellFlag::IS_UPDATED));
         // 壁情報の更新
         if let Some(up_wall) = info.up {
             self.cells[info.p.y][info.p.x].up_wall = Some(up_wall);
@@ -301,7 +300,7 @@ impl Maze {
             }
         }
         // 探索済セルに追加
-        self.cells[info.p.y][info.p.x].is_updated = true;
+        self.cells[info.p.y][info.p.x].flag.contains(CellFlag::IS_UPDATED);
     }
     /// 周辺セルを探索対象として追加します
     /// 追加する際に優先度が高い順になるようにすることでa*もどきっぽく振る舞います
@@ -370,10 +369,10 @@ impl Maze {
             // コスト更新
             self.cells[target_point.y][target_point.x].update_cost(current_cost);
             // 検索予約に追加
-            if !self.cells[target_point.y][target_point.x].is_search_around
-                && !self.cells[target_point.y][target_point.x].is_provider_pushed
+            if !self.cells[target_point.y][target_point.x].flag.contains(CellFlag::IS_SEARCH_AROUND)
+                && !self.cells[target_point.y][target_point.x].flag.contains(CellFlag::IS_PROVIDER_PUSHED)
             {
-                self.cells[target_point.y][target_point.x].is_provider_pushed = true;
+                self.cells[target_point.y][target_point.x].flag.insert(CellFlag::IS_PROVIDER_PUSHED);
 
                 *target_cost = Some(
                     self.cells[target_point.y][target_point.x].cost.unwrap()
@@ -398,7 +397,7 @@ impl Maze {
         }
 
         // 周辺探索完了フラグ
-        self.cells[p.y][p.x].is_search_around = true;
+        self.cells[p.y][p.x].flag.insert(CellFlag::IS_SEARCH_AROUND);
     }
 
     /// 現在の迷路情報を出力
@@ -467,22 +466,22 @@ impl Maze {
                         2 => write!(
                             out,
                             " {}{}{}{} ",
-                            if self.cells[MAZE_HEIGHT - 1 - j][i].is_updated {
+                            if self.cells[MAZE_HEIGHT - 1 - j][i].flag.contains(CellFlag::IS_UPDATED) {
                                 "U"
                             } else {
                                 " "
                             },
-                            if self.cells[MAZE_HEIGHT - 1 - j][i].is_search_around {
+                            if self.cells[MAZE_HEIGHT - 1 - j][i].flag.contains(CellFlag::IS_SEARCH_AROUND) {
                                 "S"
                             } else {
                                 " "
                             },
-                            if self.cells[MAZE_HEIGHT - 1 - j][i].is_provider_pushed {
+                            if self.cells[MAZE_HEIGHT - 1 - j][i].flag.contains(CellFlag::IS_PROVIDER_PUSHED) {
                                 "P"
                             } else {
                                 " "
                             },
-                            if self.cells[MAZE_HEIGHT - 1 - j][i].is_cost_dirty {
+                            if self.cells[MAZE_HEIGHT - 1 - j][i].flag.contains(CellFlag::IS_COST_DIRTY) {
                                 "D"
                             } else {
                                 " "
