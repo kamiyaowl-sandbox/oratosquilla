@@ -11,26 +11,8 @@ mod maze {
     }
     impl Default for Point {
         fn default() -> Self {
-            Self {
-                x: 0,
-                y: 0,
-            }
+            Self { x: 0, y: 0 }
         }
-    }
-
-    /// セルの検索状態
-    #[derive(Copy,Clone,Debug)]
-    pub enum SearchState {
-        /// 初期状態
-        Init, 
-        /// センサ情報更新済
-        Updated,
-        /// 周りのセルをSearchInfoProviderに追加済
-        /// 探索状態としては最終
-        AroundSearchReserved,
-        /// 最短経路になっている
-        /// 探索後に指定
-        Answer,
     }
 
     /// 各区画単位の管理情報
@@ -42,21 +24,40 @@ mod maze {
         pub right_wall: Option<bool>,
         /// ここまでの到達に必要な手数
         pub cost: Option<usize>,
-        /// セルの探索状態
-        pub state: SearchState,
+        /// セルの壁情報が更新済
+        pub is_updated: bool,
+        /// 周辺セルを探索済
+        pub is_search_around: bool,
+        /// 当初の探索時より少ないコストで到達できる場合
+        pub is_cost_dirty: bool,
     }
-
     impl Default for Cell {
         fn default() -> Self {
             Self {
                 up_wall: None,
                 right_wall: None,
                 cost: None,
-                state: SearchState::Init,
+                is_updated: false,
+                is_search_around: false,
+                is_cost_dirty: false,
             }
         }
     }
-
+    impl Cell {
+        /// コストがより良い方に更新します
+        /// もし既存のコストより良いものが反映された場合stateが変更される
+        pub fn update_cost(&mut self, new_cost: usize) {
+            self.cost = Some(match self.cost {
+                None => new_cost,
+                Some(c) if c <= new_cost => c,
+                // コストが小さいルートが発見された
+                _ => {
+                    self.is_cost_dirty = true;
+                    new_cost
+                }
+            });
+        }
+    }
     /// 実機から迷路情報の更新に使う情報
     #[derive(Debug)]
     pub struct UpdateInfo {
@@ -67,7 +68,6 @@ mod maze {
         pub left: Option<bool>,
         pub right: Option<bool>,
     }
-
     impl Default for UpdateInfo {
         fn default() -> Self {
             Self {
@@ -80,43 +80,75 @@ mod maze {
         }
     }
 
-    /// 探索対象のリスト
+    /// 普段はARMなのでx,y等すべてu32で扱いたいが、サイズがでかくなるのでここだけ圧縮する
     #[derive(Copy, Clone, Debug)]
     pub struct SearchInfo {
-        /// 探索元座標、コスト計算に使う
-        pub from: Point,
-        /// 探索先座標
-        pub to: Point,
+        x: u8,
+        y: u8,
     }
-
     impl Default for SearchInfo {
         fn default() -> Self {
             Self {
-                from: Point::default(),
-                to: Point::default(),
+                x: 0xff_u8, // dummy value
+                y: 0xff_u8, // dummy value
             }
         }
     }
-
     /// Stackにして深さ優先、追加履歴が可能な限り近いところから取り出す
     pub struct SearchInfoProvider {
-        pub infos: [SearchInfo; SEARCH_INFO_STORE_SIZE],
+        pub datas: [SearchInfo; SEARCH_INFO_STORE_SIZE],
+        pub wr_ptr: usize,
     }
     impl Default for SearchInfoProvider {
         fn default() -> Self {
             Self {
-                infos: [SearchInfo::default(); SEARCH_INFO_STORE_SIZE],
+                datas: [SearchInfo::default(); SEARCH_INFO_STORE_SIZE],
+                wr_ptr: 0,
+            }
+        }
+    }
+    impl SearchInfoProvider {
+        pub fn get_size(&self) -> usize {
+            self.wr_ptr
+        }
+        pub fn clear(&mut self) {
+            self.wr_ptr = 0;
+        }
+        pub fn push(&mut self, p: Point) -> bool {
+            if self.wr_ptr < (SEARCH_INFO_STORE_SIZE - 1) {
+                debug_assert!(p.x < 0x100);
+                debug_assert!(p.y < 0x100);
+
+                let data = SearchInfo {
+                    x: p.x as u8,
+                    y: p.y as u8,
+                };
+                self.datas[self.wr_ptr] = data;
+                self.wr_ptr += 1;
+                true
+            } else {
+                // 無理
+                false
+            }
+        }
+        pub fn pop(&mut self) -> Option<Point> {
+            if self.wr_ptr > 1 {
+                self.wr_ptr -= 1; // read有効データは書き込み先のひとつ下
+                let data = self.datas[self.wr_ptr];
+
+                Some(Point {
+                    x: usize::from(data.x),
+                    y: usize::from(data.y),
+                })
+            } else {
+                None
             }
         }
     }
 
-
-
-    use std::ops::Sub;
-    impl Sub for Point {
-        type Output = usize;
+    impl Point {
         /// ビルドオプション指定がなければ、チェビシフ距離を返します
-        fn sub(self, other: Point) -> usize {
+        pub fn distance(&self, other: Point) -> usize {
             use std::cmp;
 
             let dx = cmp::max(self.x, other.x) - cmp::min(self.x, other.x);
@@ -131,11 +163,11 @@ mod maze {
     }
 
     /// 迷路管理の親
-    #[derive(Debug)]
     pub struct Maze {
         pub cells: [[Cell; MAZE_WIDTH]; MAZE_HEIGHT],
         pub start: Point,
         pub goal: Point,
+        pub provider: SearchInfoProvider,
     }
 
     impl Default for Maze {
@@ -144,6 +176,7 @@ mod maze {
                 cells: [[Cell::default(); MAZE_WIDTH]; MAZE_HEIGHT],
                 start: Point { x: 0, y: 0 },
                 goal: Point { x: 0, y: 0 },
+                provider: SearchInfoProvider::default(),
             }
         }
     }
@@ -169,6 +202,7 @@ mod maze {
         pub fn update(&mut self, info: &UpdateInfo) {
             debug_assert!(info.p.x < MAZE_WIDTH);
             debug_assert!(info.p.y < MAZE_HEIGHT);
+            debug_assert!(!self.cells[info.p.y][info.p.x].is_updated);
             // 壁情報の更新
             if let Some(up_wall) = info.up {
                 self.cells[info.p.y][info.p.x].up_wall = Some(up_wall);
@@ -187,6 +221,44 @@ mod maze {
                     self.cells[info.p.y][info.p.x - 1].right_wall = Some(left_wall);
                 }
             }
+            // 探索済セルに追加
+            self.cells[info.p.y][info.p.x].is_updated = true;
+            // 周辺セルを読み込む
+            self.add_targets(info.p);
+        }
+        /// 周辺セルを探索対象として追加します
+        /// 追加する際に優先度が高い順になるようにすることでa*もどきっぽく振る舞います
+        fn add_targets(&mut self, p: Point) {
+            debug_assert!(self.cells[p.y][p.x].cost.is_some());
+
+            const UP: usize = 0;
+            const DOWN: usize = 1;
+            const LEFT: usize = 2;
+            const RIGHT: usize = 3;
+            const UP_LEFT: usize = 4;
+            const UP_RIGHT: usize = 5;
+            const DOWN_LEFT: usize = 6;
+            const DOWN_RIGHT: usize = 7;
+            const TARGET_NUM: usize = 8;
+
+            let current_cost = self.cells[p.y][p.x].cost.unwrap() + 1;
+            // 座標, cost_total
+            // costとcost_totalを更新してソートして追加する
+            let mut targets: [Option<(Point, usize)>; TARGET_NUM] = [None; TARGET_NUM];
+
+            // 通過可能かどうか
+            let is_passing_up =
+                p.y < MAZE_HEIGHT - 1 && self.cells[p.y][p.x].up_wall == Some(false);
+
+            if is_passing_up {
+                // コスト更新
+                self.cells[p.y + 1][p.x].update_cost(current_cost);
+                if !self.cells[p.y + 1][p.x].is_search_around {
+                    let p = Point { x: p.x, y: p.y + 1 };
+                    let total = self.cells[p.y + 1][p.x].cost.unwrap() + self.goal.distance(p);
+                    targets[UP] = Some((p, total));
+                }
+            }
         }
 
         /// 現在の迷路情報を出力
@@ -195,16 +267,17 @@ mod maze {
             const CELL_WIDTH: usize = 4;
             const CELL_HEIGHT: usize = 2;
             const UNKNOWN_STR: &str = "?";
-            const NO_WALL_STR: &str  = " ";
-            const WALL_STR: &str  = "+";
-            const INTERSECT_STR: &str  = ".";
+            const NO_WALL_STR: &str = " ";
+            const WALL_STR: &str = "+";
+            const INTERSECT_STR: &str = ".";
 
             // stdoutをロックしてまとめて書く
-            use std::io::{stdout, Write, BufWriter};
+            use std::io::{stdout, BufWriter, Write};
             let out = stdout();
             let mut out = BufWriter::new(out.lock());
 
-            for j in 0..MAZE_HEIGHT {//printのy方向と反転しているので注意
+            for j in 0..MAZE_HEIGHT {
+                //printのy方向と反転しているので注意
                 // とりあえず1行書く
                 for i in 0..MAZE_WIDTH {
                     write!(out, "{}", INTERSECT_STR)?;
@@ -225,9 +298,17 @@ mod maze {
                     for i in 0..MAZE_WIDTH {
                         // 壁間の空間
                         match local_j {
-                            0 if self.start.x == i && self.start.y == (MAZE_HEIGHT - 1 - j) => write!(out, " SS ")?,
-                            0 if self.goal.x == i && self.goal.y == (MAZE_HEIGHT - 1 - j) => write!(out, " GG ")?,
-                            1 if self.cells[MAZE_HEIGHT - 1 - j][i].cost.is_some() => write!(out, "{:>4}", self.cells[MAZE_HEIGHT - 1 - j][i].cost.unwrap())?,
+                            0 if self.start.x == i && self.start.y == (MAZE_HEIGHT - 1 - j) => {
+                                write!(out, " SS ")?
+                            }
+                            0 if self.goal.x == i && self.goal.y == (MAZE_HEIGHT - 1 - j) => {
+                                write!(out, " GG ")?
+                            }
+                            1 if self.cells[MAZE_HEIGHT - 1 - j][i].cost.is_some() => write!(
+                                out,
+                                "{:>4}",
+                                self.cells[MAZE_HEIGHT - 1 - j][i].cost.unwrap()
+                            )?,
                             _ => {
                                 for _ in 0..CELL_WIDTH {
                                     write!(out, "{}", NO_WALL_STR)?;
@@ -262,8 +343,8 @@ mod maze {
 fn main() {
     use maze::*;
 
-    let mut m = Maze::new(Point{x: 10, y:10});
+    let mut m = Maze::new(Point { x: 10, y: 10 });
     let info = UpdateInfo::default();
     m.update(&info);
-    m.debug_print();
+    m.debug_print().unwrap();
 }
